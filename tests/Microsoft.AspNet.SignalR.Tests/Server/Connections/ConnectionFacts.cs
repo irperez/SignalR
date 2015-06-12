@@ -1,106 +1,121 @@
-﻿using Moq;
-using Microsoft.AspNet.SignalR.Client.Transports;
-using Microsoft.AspNet.SignalR.Hosting.Memory;
-using System;
-using System.Net;
-using System.Threading.Tasks;
+﻿using System.Collections.Generic;
+using System.IO;
+using Microsoft.AspNet.SignalR.Infrastructure;
+using Microsoft.AspNet.SignalR.Json;
+using Microsoft.AspNet.SignalR.Transports;
+using Moq;
+using Newtonsoft.Json;
 using Xunit;
 
-namespace Microsoft.AspNet.SignalR.Client.Tests
+namespace Microsoft.AspNet.SignalR.Tests
 {
-    public class ConnectionFacts
+    public class ServerConnectionFacts
     {
-        public class Start : IDisposable
+        public class PopulateResponseState
         {
             [Fact]
-            public void FailsIfProtocolVersionIsNull()
+            public void GroupTokenIsNullWhenNoGroups()
             {
-                var connection = new Connection("http://test");
-                var transport = new Mock<IClientTransport>();
-                transport.Setup(m => m.Negotiate(connection)).Returns(TaskAsyncHelper.FromResult(new NegotiationResponse
-                {
-                    ProtocolVersion = null
-                }));
+                var response = new PersistentResponse();
+                var groupSet = new DiffSet<string>(new string[] { });
+                var serializer = JsonUtility.CreateDefaultSerializer();
+                var protectedData = new Mock<IProtectedData>();
+                protectedData.Setup(m => m.Protect(It.IsAny<string>(), It.IsAny<string>()))
+                    .Returns<string, string>((value, purpose) => value);
 
-                var aggEx = Assert.Throws<AggregateException>(() => connection.Start(transport.Object).Wait());
-                var ex = aggEx.Unwrap();
-                Assert.IsType(typeof(InvalidOperationException), ex);
-                Assert.Equal("Incompatible protocol version.", ex.Message);
+                protectedData.Setup(m => m.Unprotect(It.IsAny<string>(), It.IsAny<string>()))
+                             .Returns<string, string>((value, purpose) => value);
+
+                Connection.PopulateResponseState(response, groupSet, serializer, protectedData.Object, connectionId: null);
+
+                Assert.Null(response.GroupsToken);
             }
 
             [Fact]
-            public void FailedNegotiateShouldNotBeActive()
+            public void GroupTokenIsNullWhenNoNewGroups()
             {
-                var connection = new Connection("http://test");
-                var transport = new Mock<IClientTransport>();
-                transport.Setup(m => m.Negotiate(connection))
-                         .Returns(TaskAsyncHelper.FromError<NegotiationResponse>(new InvalidOperationException("Something failed.")));
+                var response = new PersistentResponse();
+                var groupSet = new DiffSet<string>(new string[] { "a", "b", "c" });
 
-                var aggEx = Assert.Throws<AggregateException>(() => connection.Start(transport.Object).Wait());
-                var ex = aggEx.Unwrap();
-                Assert.IsType(typeof(InvalidOperationException), ex);
-                Assert.Equal("Something failed.", ex.Message);
-                Assert.Equal(ConnectionState.Disconnected, connection.State);
+                // Get the first diff
+                groupSet.DetectChanges();
+
+                var serializer = JsonUtility.CreateDefaultSerializer();
+                var protectedData = new Mock<IProtectedData>();
+                protectedData.Setup(m => m.Protect(It.IsAny<string>(), It.IsAny<string>()))
+                    .Returns<string, string>((value, purpose) => value);
+
+                protectedData.Setup(m => m.Unprotect(It.IsAny<string>(), It.IsAny<string>()))
+                             .Returns<string, string>((value, purpose) => value);
+
+                Connection.PopulateResponseState(response, groupSet, serializer, protectedData.Object, connectionId: null);
+
+                Assert.Null(response.GroupsToken);
             }
 
             [Fact]
-            public void FailedStartShouldNotBeActive()
+            public void GroupTokenIsNotNullWhenGroupsChange()
             {
-                var connection = new Connection("http://test");
-                var transport = new Mock<IClientTransport>();
-                transport.Setup(m => m.Negotiate(connection))
-                         .Returns(TaskAsyncHelper.FromResult(new NegotiationResponse
-                         {
-                             ProtocolVersion = "1.0",
-                             ConnectionId = "Something"
-                         }));
+                var response = new PersistentResponse();
+                var groupSet = new DiffSet<string>(new string[] { "a:1", "b:2", "c", "d" });
 
-                transport.Setup(m => m.Start(connection, null))
-                         .Returns(TaskAsyncHelper.FromError(new InvalidOperationException("Something failed.")));
+                groupSet.DetectChanges();
 
-                var aggEx = Assert.Throws<AggregateException>(() => connection.Start(transport.Object).Wait());
-                var ex = aggEx.Unwrap();
-                Assert.IsType(typeof(InvalidOperationException), ex);
-                Assert.Equal("Something failed.", ex.Message);
-                Assert.Equal(ConnectionState.Disconnected, connection.State);
+                groupSet.Add("g");
+
+                var serializer = JsonUtility.CreateDefaultSerializer();
+                string results = string.Empty;
+                var protectedData = new Mock<IProtectedData>();
+                protectedData.Setup(m => m.Protect(It.IsAny<string>(), It.IsAny<string>()))
+                    .Returns<string, string>((value, purpose) =>
+                             {
+                                 results = value;
+                                 return value;
+                             });
+
+                protectedData.Setup(m => m.Unprotect(It.IsAny<string>(), It.IsAny<string>()))
+                             .Returns<string, string>((value, purpose) => value);
+
+                Connection.PopulateResponseState(response, groupSet, serializer, protectedData.Object, connectionId: "myconnection");
+
+                Assert.NotNull(response.GroupsToken);
+                var parts = response.GroupsToken.Split(new[] { ':' }, 2);
+                Assert.Equal(2, parts.Length);
+                Assert.Equal("myconnection", parts[0]);
+                Assert.True(results.Contains("a:1"));
+                Assert.True(results.Contains("b:2"));
+                Assert.True(results.Contains("c"));
+                Assert.True(results.Contains("d"));
+                Assert.True(results.Contains("g"));
             }
 
             [Fact]
-            public void ThrownWebExceptionShouldBeUnwrapped()
+            public void GroupTokenIsNotNullWhenGroupsChangeToEmpty()
             {
-                var host = new MemoryHost();
-                host.MapConnection<MyBadConnection>("/ErrorsAreFun");
+                var response = new PersistentResponse();
+                var groupSet = new DiffSet<string>(new string[] { "b", "d" });
 
-                var connection = new Client.Connection("http://test/ErrorsAreFun");
+                groupSet.DetectChanges();
 
-                // Expecting 404
-                var aggEx = Assert.Throws<AggregateException>(() => connection.Start(host).Wait());
+                groupSet.Remove("b");
+                groupSet.Remove("d");
 
-                connection.Stop();
+                var serializer = JsonUtility.CreateDefaultSerializer();
+                var protectedData = new Mock<IProtectedData>();
+                protectedData.Setup(m => m.Protect(It.IsAny<string>(), It.IsAny<string>()))
+                    .Returns<string, string>((value, purpose) => value);
 
-                using (var ser = aggEx.GetError())
-                {
-                    Assert.Equal(ser.StatusCode, HttpStatusCode.NotFound);
-                    Assert.NotNull(ser.ResponseBody);
-                    Assert.NotNull(ser.Exception);
-                }
-            }
+                protectedData.Setup(m => m.Unprotect(It.IsAny<string>(), It.IsAny<string>()))
+                             .Returns<string, string>((value, purpose) => value);
 
-            public class MyBadConnection : PersistentConnection
-            {
-                protected override Task OnConnectedAsync(IRequest request, string connectionId)
-                {
-                    // Should throw 404
-                    using (HttpWebRequest.Create("http://www.microsoft.com/mairyhadalittlelambbut_shelikedhertwinkling_littlestar_better").GetResponse()) { }
+                Connection.PopulateResponseState(response, groupSet, serializer, protectedData.Object, connectionId: "myconnection");
 
-                    return base.OnConnectedAsync(request, connectionId);
-                }
-            }
-
-            public void Dispose()
-            {
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
+                Assert.NotNull(response.GroupsToken);
+                var parts = response.GroupsToken.Split(new[] { ':' }, 2);
+                Assert.Equal(2, parts.Length);
+                Assert.Equal("myconnection", parts[0]);
+                var groups = serializer.Deserialize<string[]>(new JsonTextReader(new StringReader(parts[1])));
+                Assert.Equal(0, groups.Length);
             }
         }
     }

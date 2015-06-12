@@ -8,7 +8,7 @@ namespace Microsoft.AspNet.SignalR.Client.Infrastructure
     /// <summary>
     /// Allows for thread safe invocation of a delegate.
     /// </summary>
-    internal struct ThreadSafeInvoker
+    internal class ThreadSafeInvoker
     {
         private int _invoked;
 
@@ -28,17 +28,6 @@ namespace Microsoft.AspNet.SignalR.Client.Infrastructure
             if (Interlocked.Exchange(ref _invoked, 1) == 0)
             {
                 action(arg);
-                return true;
-            }
-
-            return false;
-        }
-
-        public bool Invoke<T1, T2>(Action<T1, T2> action, T1 arg1, T2 arg2)
-        {
-            if (Interlocked.Exchange(ref _invoked, 1) == 0)
-            {
-                action(arg1, arg2);
                 return true;
             }
 

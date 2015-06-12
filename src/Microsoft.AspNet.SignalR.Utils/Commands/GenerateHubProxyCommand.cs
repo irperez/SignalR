@@ -2,11 +2,10 @@
 
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
-using System.Net;
 using System.Reflection;
-using System.Text.RegularExpressions;
 
 namespace Microsoft.AspNet.SignalR.Utils
 {
@@ -20,12 +19,12 @@ namespace Microsoft.AspNet.SignalR.Utils
 
         public override string DisplayName
         {
-            get { return "Generate Hub Proxy"; }
+            get { return String.Format(CultureInfo.CurrentCulture, Resources.Notify_GenerateHubProxy); }
         }
 
         public override string Help
         {
-            get { return "Generates Hub proxy JavaScript files for server Hub classes."; }
+            get { return String.Format(CultureInfo.CurrentCulture, Resources.Notify_GeneratesHubProxyJSFilesForHub); }
         }
 
         public override string[] Names
@@ -35,12 +34,11 @@ namespace Microsoft.AspNet.SignalR.Utils
 
         public override void Execute(string[] args)
         {
-            bool absolute = false;
             string path = null;
             string outputPath = null;
             string url = null;
 
-            ParseArguments(args, out url, out absolute, out path, out outputPath);
+            ParseArguments(args, out url, out path, out outputPath);
 
             if (String.IsNullOrEmpty(outputPath))
             {
@@ -54,14 +52,7 @@ namespace Microsoft.AspNet.SignalR.Utils
                 outputPath = Path.Combine(outputPath, "server.js");
             }
 
-            if (!String.IsNullOrEmpty(url) && String.IsNullOrEmpty(path))
-            {
-                OutputHubsFromUrl(url, outputPath, absolute);
-            }
-            else
-            {
-                OutputHubs(path, url, outputPath);
-            }
+            OutputHubs(path, url, outputPath);
         }
 
         private void OutputHubs(string path, string url, string outputPath)
@@ -72,7 +63,7 @@ namespace Microsoft.AspNet.SignalR.Utils
             var assemblies = Directory.GetFiles(path, "*.dll", SearchOption.AllDirectories);
             var tempPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
 
-            Info(String.Format("Creating temp directory {0}", tempPath));
+            Info(String.Format(CultureInfo.CurrentCulture, Resources.Notify_CreatingTempDirectory, tempPath));
 
             Directory.CreateDirectory(tempPath);
 
@@ -93,7 +84,7 @@ namespace Microsoft.AspNet.SignalR.Utils
 
             var generator = (JavaScriptGenerator)domain.CreateInstanceAndUnwrap(typeof(Program).Assembly.FullName,
                                                                                 typeof(JavaScriptGenerator).FullName);
-            var js = generator.GenerateProxy(path, url);
+            var js = generator.GenerateProxy(path, url, Warning);
 
             Generate(outputPath, js);
         }
@@ -104,48 +95,14 @@ namespace Microsoft.AspNet.SignalR.Utils
             File.Copy(sourcePath, target, overwrite: true);
         }
 
-        private static void OutputHubsFromUrl(string url, string outputPath, bool absolute)
-        {
-            string baseUrl = null;
-            if (!url.EndsWith("/"))
-            {
-                url += "/";
-            }
-
-            if (!url.EndsWith("signalr"))
-            {
-                url += "signalr/";
-            }
-
-            baseUrl = url;
-            if (!url.EndsWith("hubs", StringComparison.OrdinalIgnoreCase))
-            {
-                url += "hubs";
-            }
-
-            var uri = new Uri(url);
-
-            var wc = new WebClient();
-            string js = wc.DownloadString(uri);
-            if (absolute)
-            {
-                js = Regex.Replace(js, @"=(\w+)\(""(.*?/signalr)""\)", m =>
-                {
-                    return "=" + m.Groups[1].Value + "(\"" + baseUrl + "\")";
-                });
-            }
-
-            Generate(outputPath, js);
-        }
-
         private static void Generate(string outputPath, string js)
         {
             File.WriteAllText(outputPath, js);
         }
 
-        private static void ParseArguments(string[] args, out string url, out bool absolute, out string path, out string outputPath)
+        [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Globalization", "CA1307:SpecifyStringComparison", MessageId = "System.String.StartsWith(System.String)", Justification = "All starts with methods are SignalR/networking terms.  Will not change via localization.")]
+        private static void ParseArguments(string[] args, out string url, out string path, out string outputPath)
         {
-            absolute = false;
             path = null;
             url = null;
             outputPath = null;
@@ -160,9 +117,6 @@ namespace Microsoft.AspNet.SignalR.Utils
                 KeyValuePair<string, string> arg = ParseArg(a);
                 switch (arg.Key)
                 {
-                    case "absolute":
-                        absolute = true;
-                        break;
                     case "path":
                         path = arg.Value;
                         break;
@@ -171,8 +125,6 @@ namespace Microsoft.AspNet.SignalR.Utils
                         break;
                     case "o":
                         outputPath = arg.Value;
-                        break;
-                    default:
                         break;
                 }
             }
@@ -194,11 +146,19 @@ namespace Microsoft.AspNet.SignalR.Utils
 
         public class JavaScriptGenerator : MarshalByRefObject
         {
-            public string GenerateProxy(string path, string url)
+            [System.Diagnostics.CodeAnalysis.SuppressMessage("Microsoft.Performance", "CA1822:MarkMembersAsStatic", Justification = "Called from non-static.")]
+            public string GenerateProxy(string path, string url, Action<string> warning)
             {
                 foreach (var assemblyPath in Directory.GetFiles(path, "*.dll", SearchOption.AllDirectories))
                 {
-                    Assembly.Load(AssemblyName.GetAssemblyName(assemblyPath));
+                    try
+                    {
+                        Assembly.Load(AssemblyName.GetAssemblyName(assemblyPath));
+                    }
+                    catch (BadImageFormatException e)
+                    {
+                         warning(e.Message);
+                    }
                 }
 
                 var signalrAssembly = (from a in AppDomain.CurrentDomain.GetAssemblies()
